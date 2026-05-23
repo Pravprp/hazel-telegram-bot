@@ -18,7 +18,9 @@ nvidia_client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=N
 TEXT_MODELS_GOOGLE = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash", "gemma-4-31b-it"]
 TEXT_MODELS_GROQ = ["allam-2-7b", "llama-3.3-70b-versatile", "qwen/qwen3-32b"]
 TEXT_MODELS_NVIDIA = ["google/gemma-2-2b-it", "stepfun-ai/step-3.5-flash"]
-IMAGEN_MODELS = ["imagen-4.0-fast-generate-001", "imagen-4.0-generate-001", "imagen-4.0-ultra-generate-001"]
+
+# Updated to use the correct available Imagen 3 model
+IMAGEN_MODELS = ["imagen-3.0-generate-001"]
 
 TONE_PROMPTS = {
     "Friendly": "Respond with warm, cheerful, and exceptionally helpful female patterns.",
@@ -75,14 +77,26 @@ async def text_to_text_generation(prompt, language="English", tone="Friendly"):
     raise RuntimeError("All configured generative text inference engines failed or timed out.")
 
 async def text_to_image_generation(prompt):
+    """Generates images using Google's dedicated ImageGenerationModel API."""
     for model_name in IMAGEN_MODELS:
         try:
-            model = genai.GenerativeModel(model_name)
-            result = model.generate_content(f"Generate high quality image from prompt: {prompt}")
-            if hasattr(result, 'bytes_data'): return result.bytes_data
+            # We must use ImageGenerationModel, NOT GenerativeModel for images
+            model = genai.ImageGenerationModel(f"models/{model_name}")
+            result = model.generate_images(
+                prompt=prompt,
+                number_of_images=1,
+                output_mime_type="image/jpeg"
+            )
+            
+            # Extract the raw byte data from the generated payload
+            if result.images:
+                # The SDK nests the bytes inside the _image attribute
+                return result.images[0]._image.image_bytes
+                
         except Exception as e:
             logger.warning(f"Imagen infrastructure failure ({model_name}): {e}")
-    raise RuntimeError("All primary Image synthesis engines failed.")
+            
+    raise RuntimeError("All primary Image synthesis engines failed. Ensure your prompt meets safety guidelines.")
 
 async def image_to_text_description(image_bytes, prompt=None):
     custom_prompt = prompt if prompt else "Describe this image in precise detail."
