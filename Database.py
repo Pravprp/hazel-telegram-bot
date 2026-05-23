@@ -69,7 +69,6 @@ def get_group_config(group_id):
     row = cursor.fetchone()
     
     if not row:
-        # Register new group profile instantly
         cursor.execute(
             "INSERT INTO group_configs (group_id) VALUES (%s) ON CONFLICT DO NOTHING;", 
             (group_id,)
