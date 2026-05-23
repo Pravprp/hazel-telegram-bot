@@ -22,28 +22,19 @@ LANGUAGES_ARRAY = [
     "Spanish", "Tamil", "Telugu", "Ukrainian", "Urdu", "Uzbek", "Vietnamese"
 ]
 
-# ==========================================
-# EMBEDDED WEB SERVER FOR RENDER COMPLIANCE
-# ==========================================
 async def web_ping_handler(request):
-    """Responds to UptimeRobot pings to satisfy Render port binding rules."""
     return web.Response(text="Hazel Engine is active and running 24/7!", status=200)
 
 async def start_web_server():
-    """Launches the lightweight web server loop in the background."""
     app = web.Application()
     app.router.add_get("/", web_ping_handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    # Render provides the port dynamically via the PORT environment variable
     port = int(os.getenv("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     Errors.logger.info(f"Web server successfully bound to port {port}")
 
-# ==========================================
-# CORE UTILITY CONTROLLERS
-# ==========================================
 async def check_admin(chat_id, user_id):
     try:
         admins = await bot.get_chat_administrators(chat_id)
@@ -80,9 +71,6 @@ def generate_settings_keyboard(config):
     )
     return markup
 
-# ==========================================
-# COMMANDS & INTERACTIVE LAYERS
-# ==========================================
 @bot.message_handler(commands=['about_Hazel'])
 async def about_hazel_command(message):
     if message.chat.type == "private": return
@@ -91,13 +79,14 @@ async def about_hazel_command(message):
     
     help_text = (
         "✨ *Hazel Multimodal System Guide* ✨\n\n"
-        "I am Hazel, an advanced AI. Here is how you can use my features:\n\n"
         "💬 *Chat*: Mention 'Hi', 'Hello', or 'Hazel' to wake me up. Once awake, I only respond to messages replying directly to me.\n\n"
         "🎙️ `/aud2txt` — Reply to audio to transcribe it.\n"
-        "🖼️ `/img2text` — Reply to an image to describe it, or ask a question directly with the command.\n"
+        "🖼️ `/img2text` — Reply to an image to describe it, or ask a question.\n"
         "🎨 `/txt2img` — Reply to a text prompt to generate an image.\n"
+        "🎵 `/txt2aud` — Reply to text to generate a voice message.\n"
+        "🗣️ `/voice2voice` — Reply to a voice message to get an AI voice reply.\n"
         "🌐 `/tr` — Reply to text to translate it to English.\n"
-        "⚙️ `/settings` — Admin panel panel configurations."
+        "⚙️ `/settings` — Admin configuration panel."
     )
     await bot.send_message(message.chat.id, help_text, parse_mode="Markdown")
 
@@ -147,7 +136,8 @@ async def handle_callbacks(call):
         await bot.edit_message_text("🔧 *Hazel Core Settings Dashboard*", group_id, call.message.message_id, reply_markup=generate_settings_keyboard(config), parse_mode="Markdown")
     await bot.answer_callback_query(call.id)
 
-@bot.message_handler(commands=['aud2txt', 'img2text', 'txt2img', 'tr'])
+# INSTRUCTION ADDED: `/txt2aud` and `/voice2voice` routing commands
+@bot.message_handler(commands=['aud2txt', 'img2text', 'txt2img', 'txt2aud', 'voice2voice', 'tr'])
 async def process_targeted_commands(message):
     if message.chat.type == "private" or not message.reply_to_message: return
     cmd = message.text.split()[0].split('@')[0]
@@ -170,6 +160,28 @@ async def process_targeted_commands(message):
             text_output = await Models.speech_to_text_conversion(local_path)
             os.remove(local_path)
             await bot.edit_message_text(f"📝 *Transcription Complete*:\n\n{text_output}", chat_id, status_msg.message_id, parse_mode="Markdown")
+
+        elif cmd == "/txt2aud" and target.text:
+            await bot.edit_message_text("🎵 Converting text block into natural speech...", chat_id, status_msg.message_id)
+            audio_bytes = await Models.text_to_speech_conversion(target.text)
+            await bot.delete_message(chat_id, status_msg.message_id)
+            await bot.send_voice(chat_id, audio_bytes, reply_to_message_id=target.message_id)
+            
+        elif cmd == "/voice2voice" and (target.audio or target.voice):
+            if not config['voice_chat']:
+                await bot.edit_message_text("⚠️ Voice conversational modules are disabled in group settings.", chat_id, status_msg.message_id)
+                return
+            await bot.edit_message_text("🗣️ Analyzing audio and synthesizing AI vocal response...", chat_id, status_msg.message_id)
+            file_info = await bot.get_file(target.voice.file_id if target.voice else target.audio.file_id)
+            downloaded_file = await bot.download_file(file_info.file_path)
+            local_path = f"temp_v2v_{target.message_id}.ogg"
+            with open(local_path, 'wb') as f: f.write(downloaded_file)
+            
+            audio_bytes = await Models.voice_to_voice_conversion(local_path)
+            os.remove(local_path)
+            
+            await bot.delete_message(chat_id, status_msg.message_id)
+            await bot.send_voice(chat_id, audio_bytes, reply_to_message_id=target.message_id)
 
         elif cmd == "/img2text" and target.photo:
             await bot.edit_message_text("🔍 Processing image frames...", chat_id, status_msg.message_id)
@@ -202,15 +214,17 @@ async def handle_group_chat_flows(message):
     text = message.text.strip() if message.text else ""
     if not text: return
 
+    # INSTRUCTION ADDED: Extract lowercase text for case-insensitive matching
+    text_lower = text.lower()
     config = Database.get_group_config(chat_id)
 
-    if text.lower() in ["stop", "turn off", "shut up"]:
+    if text_lower in ["stop", "turn off", "shut up"]:
         if is_group_awake(chat_id) and message.reply_to_message and message.reply_to_message.from_user.id == (await bot.get_me()).id:
             update_activity(chat_id, explicit_state="sleep")
             await bot.send_message(chat_id, "Ok ! Im going to Sleep 🥱", reply_to_message_id=message.message_id)
             return
 
-    if text in ["Hi", "Hello", "Hazel"]:
+    if text_lower in ["hi", "hello", "hazel"]:
         update_activity(chat_id, explicit_state="awake")
         await bot.send_message(chat_id, "Hi😊", reply_to_message_id=message.message_id)
         return
@@ -228,12 +242,8 @@ async def handle_group_chat_flows(message):
             await bot.delete_message(chat_id, status_msg.message_id)
             await Errors.handle_error(bot, chat_id, e, "Text engine failure")
 
-# ==========================================
-# CONCURRENT EVENT ENGINE EXECUTION
-# ==========================================
 async def main():
     Database.init_db()
-    # Start web server alongside the polling loop concurrently
     await start_web_server()
     Errors.logger.info("Hazel Web Service engine active. Starting long-polling thread...")
     await bot.polling(non_stop=True)
