@@ -18,9 +18,8 @@ nvidia_client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=N
 TEXT_MODELS_GOOGLE = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash", "gemma-4-31b-it"]
 TEXT_MODELS_GROQ = ["allam-2-7b", "llama-3.3-70b-versatile", "qwen/qwen3-32b"]
 TEXT_MODELS_NVIDIA = ["google/gemma-2-2b-it", "stepfun-ai/step-3.5-flash"]
-
-# Updated to use the correct available Imagen 3 model
 IMAGEN_MODELS = ["imagen-3.0-generate-001"]
+TTS_MODELS_GOOGLE = ["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"]
 
 TONE_PROMPTS = {
     "Friendly": "Respond with warm, cheerful, and exceptionally helpful female patterns.",
@@ -38,7 +37,8 @@ def resolve_system_prompt(language, tone):
     elif tone == "Situational":
         selected_tone = "Friendly"
         
-    return f"Your name is Hazel, a highly intelligent female AI companion. You must reply exclusively in {language} script. Tone Guidelines: {TONE_PROMPTS.get(selected_tone, '')}"
+    # INSTRUCTION ADDED: Force 1-2 line maximum responses
+    return f"Your name is Hazel, a highly intelligent female AI companion. You must reply exclusively in {language} script. Tone Guidelines: {TONE_PROMPTS.get(selected_tone, '')} IMPORTANT: Keep all responses extremely short, concise, and natural, strictly 1 to 2 lines maximum."
 
 async def text_to_text_generation(prompt, language="English", tone="Friendly"):
     sys_instruction = resolve_system_prompt(language, tone)
@@ -77,26 +77,14 @@ async def text_to_text_generation(prompt, language="English", tone="Friendly"):
     raise RuntimeError("All configured generative text inference engines failed or timed out.")
 
 async def text_to_image_generation(prompt):
-    """Generates images using Google's dedicated ImageGenerationModel API."""
     for model_name in IMAGEN_MODELS:
         try:
-            # We must use ImageGenerationModel, NOT GenerativeModel for images
             model = genai.ImageGenerationModel(f"models/{model_name}")
-            result = model.generate_images(
-                prompt=prompt,
-                number_of_images=1,
-                output_mime_type="image/jpeg"
-            )
-            
-            # Extract the raw byte data from the generated payload
-            if result.images:
-                # The SDK nests the bytes inside the _image attribute
-                return result.images[0]._image.image_bytes
-                
+            result = model.generate_images(prompt=prompt, number_of_images=1, output_mime_type="image/jpeg")
+            if result.images: return result.images[0]._image.image_bytes
         except Exception as e:
             logger.warning(f"Imagen infrastructure failure ({model_name}): {e}")
-            
-    raise RuntimeError("All primary Image synthesis engines failed. Ensure your prompt meets safety guidelines.")
+    raise RuntimeError("All primary Image synthesis engines failed.")
 
 async def image_to_text_description(image_bytes, prompt=None):
     custom_prompt = prompt if prompt else "Describe this image in precise detail."
@@ -144,3 +132,31 @@ async def text_translation_to_english(text_content):
             )
             return comp.choices[0].message.content
     raise RuntimeError("Translation network matrix is currently unreachable.")
+
+async def text_to_speech_conversion(text_content):
+    """Processes Text-to-Speech generation via Google Audio APIs"""
+    for model_name in TTS_MODELS_GOOGLE:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(text_content)
+            
+            # Extract raw audio bytes from the SDK response payload
+            for part in response.candidates[0].content.parts:
+                if part.inline_data:
+                    return part.inline_data.data
+        except Exception as e:
+            logger.warning(f"TTS infrastructure failure ({model_name}): {e}")
+    raise RuntimeError("Text-to-Speech processing failed.")
+
+async def voice_to_voice_conversion(file_path):
+    """Pipeline: User Audio -> Text Transcription -> AI Text Response -> AI Audio output"""
+    # 1. Transcribe the user's voice message
+    stt_result = await speech_to_text_conversion(file_path)
+    user_text = stt_result.text if hasattr(stt_result, 'text') else str(stt_result)
+    
+    # 2. Generate a 1-2 line AI conversational response
+    ai_response = await text_to_text_generation(user_text)
+    
+    # 3. Convert that response back into an audio voice file
+    audio_bytes = await text_to_speech_conversion(ai_response)
+    return audio_bytes
